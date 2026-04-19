@@ -3,11 +3,12 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
+  base: '/reserve-inventory/',
   plugins: [
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icon-192.png', 'icon-512.png', 'favicon.svg'],
+      includeAssets: ['favicon.svg', 'icon-192.png', 'icon-512.png', 'icons.svg'],
       manifest: {
         name: 'リザーブ在庫システム',
         short_name: '在庫システム',
@@ -35,5 +36,4 @@ export default defineConfig({
       },
     }),
   ],
-  base: '/reserve-inventory/',
 })
