@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const STORAGE_KEY = "reserve_inventory_data_v8";
+const STORAGE_KEY = "reserve_inventory_data_v9";
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -255,6 +255,7 @@ export default function App() {
   const fileInputRef = useRef(null);
   const shelfMasterCsvInputRef = useRef(null);
   const partMasterCsvInputRef = useRef(null);
+  const receiptCsvInputRef = useRef(null);
 
   useEffect(() => {
     const saveData = {
@@ -883,7 +884,7 @@ export default function App() {
   function exportBackup() {
     const backupData = {
       appName: "reserve_inventory",
-      version: 4,
+      version: 5,
       exportedAt: new Date().toISOString(),
       data: {
         shelfMasters,
@@ -1117,6 +1118,128 @@ export default function App() {
     reader.readAsText(file, "utf-8");
   }
 
+  function openReceiptCsvDialog() {
+    if (receiptCsvInputRef.current) {
+      receiptCsvInputRef.current.value = "";
+      receiptCsvInputRef.current.click();
+    }
+  }
+
+  function importReceiptCsv(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const text = String(reader.result ?? "");
+        const rows = parseCsvText(text);
+
+        if (rows.length === 0) {
+          alert("CSVにデータがありません");
+          return;
+        }
+
+        const header = rows[0].map((v) => v.trim());
+        const shelfNoIndex = header.indexOf("棚番");
+        const partNoIndex = header.indexOf("品番");
+        const boxCountIndex = header.indexOf("箱数");
+        const receiptDateIndex = header.indexOf("入庫日");
+
+        if (
+          shelfNoIndex === -1 ||
+          partNoIndex === -1 ||
+          boxCountIndex === -1 ||
+          receiptDateIndex === -1
+        ) {
+          alert("見出しは『棚番,品番,箱数,入庫日』が必要です");
+          return;
+        }
+
+        let added = 0;
+        let skipped = 0;
+
+        const existingRows = new Set(
+          receipts.map((r) => `${r.shelfNo}__${r.partNo}__${r.boxCount}__${r.receiptDate}`)
+        );
+
+        const newItems = [];
+        const tempUsedShelfNos = new Set();
+
+        for (const r of receipts) {
+          const shipped = shipments
+            .filter((s) => s.receiptId === r.id && !s.canceled)
+            .reduce((sum, s) => sum + s.boxCount, 0);
+
+          const remaining = r.boxCount - shipped;
+          if (remaining > 0) {
+            tempUsedShelfNos.add(r.shelfNo);
+          }
+        }
+
+        for (let i = 1; i < rows.length; i++) {
+          const row = rows[i];
+
+          const shelfNo = (row[shelfNoIndex] || "").trim().toUpperCase();
+          const partNo = (row[partNoIndex] || "").trim().toUpperCase();
+          const boxCount = Number((row[boxCountIndex] || "").trim());
+          const receiptDate = (row[receiptDateIndex] || "").trim();
+
+          if (!shelfNo || !partNo || !boxCount || !receiptDate) {
+            skipped++;
+            continue;
+          }
+
+          if (boxCount <= 0) {
+            skipped++;
+            continue;
+          }
+
+          const shelfExists = shelfMasters.some((s) => s.shelfNo === shelfNo);
+          const partExists = masters.some((m) => m.partNo === partNo);
+
+          if (!shelfExists || !partExists) {
+            skipped++;
+            continue;
+          }
+
+          if (tempUsedShelfNos.has(shelfNo)) {
+            skipped++;
+            continue;
+          }
+
+          const rowKey = `${shelfNo}__${partNo}__${boxCount}__${receiptDate}`;
+          if (existingRows.has(rowKey)) {
+            skipped++;
+            continue;
+          }
+
+          existingRows.add(rowKey);
+          tempUsedShelfNos.add(shelfNo);
+
+          newItems.push({
+            id: Date.now() + Math.random() + i,
+            shelfNo,
+            partNo,
+            boxCount,
+            receiptDate,
+          });
+          added++;
+        }
+
+        if (newItems.length > 0) {
+          setReceipts((prev) => [...prev, ...newItems]);
+        }
+
+        alert(`入庫CSV取込完了\n追加: ${added}件\nスキップ: ${skipped}件`);
+      } catch {
+        alert("入庫CSVの取込に失敗しました");
+      }
+    };
+
+    reader.readAsText(file, "utf-8");
+  }
+
   function exportStockCsv() {
     const rows = filteredStockList.map((r) => [
       r.shelfNo,
@@ -1330,6 +1453,14 @@ export default function App() {
         <div style={sectionStyle}>
           <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "center", marginBottom: "15px" }}>
             <h2 style={{ fontSize: "28px", margin: 0 }}>入庫登録</h2>
+            <button style={buttonStyle} onClick={openReceiptCsvDialog}>CSV取込</button>
+            <input
+              ref={receiptCsvInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              style={{ display: "none" }}
+              onChange={importReceiptCsv}
+            />
             <div style={{ fontSize: "18px" }}>空いている棚番数: {availableShelfMasters.length}</div>
           </div>
 
@@ -1406,6 +1537,10 @@ export default function App() {
                 編集取消
               </button>
             )}
+          </div>
+
+          <div style={{ marginTop: "14px", fontSize: "16px", color: "#475569", lineHeight: "1.7" }}>
+            入庫CSVの見出しは <strong>棚番,品番,箱数,入庫日</strong> です。
           </div>
         </div>
       )}
