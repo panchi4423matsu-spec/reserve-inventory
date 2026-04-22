@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const STORAGE_KEY = "reserve_inventory_data_v9";
+const STORAGE_KEY = "reserve_inventory_data_v10";
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -15,6 +15,7 @@ function loadData() {
         masters: [],
         receipts: [],
         shipments: [],
+        plannedReceipts: [],
       };
     }
 
@@ -25,6 +26,7 @@ function loadData() {
       masters: Array.isArray(parsed.masters) ? parsed.masters : [],
       receipts: Array.isArray(parsed.receipts) ? parsed.receipts : [],
       shipments: Array.isArray(parsed.shipments) ? parsed.shipments : [],
+      plannedReceipts: Array.isArray(parsed.plannedReceipts) ? parsed.plannedReceipts : [],
     };
   } catch {
     return {
@@ -32,6 +34,7 @@ function loadData() {
       masters: [],
       receipts: [],
       shipments: [],
+      plannedReceipts: [],
     };
   }
 }
@@ -217,6 +220,7 @@ export default function App() {
   const [masters, setMasters] = useState(initialData.masters);
   const [receipts, setReceipts] = useState(initialData.receipts);
   const [shipments, setShipments] = useState(initialData.shipments);
+  const [plannedReceipts, setPlannedReceipts] = useState(initialData.plannedReceipts);
 
   const [shelfMasterForm, setShelfMasterForm] = useState({
     shelfNo: "",
@@ -240,6 +244,13 @@ export default function App() {
     partNo: "",
   });
 
+  const [plannedReceiptForm, setPlannedReceiptForm] = useState({
+    planId: "",
+    shelfNo: "",
+    boxCount: "",
+    receiptDate: todayStr(),
+  });
+
   const [shipmentPreview, setShipmentPreview] = useState(null);
   const [editingShelfMasterId, setEditingShelfMasterId] = useState(null);
   const [editingMasterId, setEditingMasterId] = useState(null);
@@ -249,6 +260,7 @@ export default function App() {
   const [receiptSearch, setReceiptSearch] = useState("");
   const [shipmentSearch, setShipmentSearch] = useState("");
   const [shelfSearch, setShelfSearch] = useState("");
+  const [plannedSearch, setPlannedSearch] = useState("");
 
   const [message, setMessage] = useState("");
 
@@ -256,6 +268,7 @@ export default function App() {
   const shelfMasterCsvInputRef = useRef(null);
   const partMasterCsvInputRef = useRef(null);
   const receiptCsvInputRef = useRef(null);
+  const plannedReceiptCsvInputRef = useRef(null);
 
   useEffect(() => {
     const saveData = {
@@ -263,9 +276,10 @@ export default function App() {
       masters,
       receipts,
       shipments,
+      plannedReceipts,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(saveData));
-  }, [shelfMasters, masters, receipts, shipments]);
+  }, [shelfMasters, masters, receipts, shipments, plannedReceipts]);
 
   function setInfo(text) {
     setMessage(text);
@@ -282,6 +296,12 @@ export default function App() {
   function getShelfName(shelfNo) {
     const found = shelfMasters.find((s) => s.shelfNo === shelfNo);
     return found ? found.shelfName : "";
+  }
+
+  function getPlanStatus(plan) {
+    if (plan.remainingQty <= 0) return "完了";
+    if (plan.remainingQty < plan.planQty) return "一部入庫";
+    return "未完了";
   }
 
   function isShelfInUse(shelfNo, excludeReceiptId = null) {
@@ -458,6 +478,9 @@ export default function App() {
         setShipments((prev) =>
           prev.map((s) => (s.partNo === oldPartNo ? { ...s, partNo } : s))
         );
+        setPlannedReceipts((prev) =>
+          prev.map((p) => (p.partNo === oldPartNo ? { ...p, partNo } : p))
+        );
       }
 
       setEditingMasterId(null);
@@ -490,9 +513,10 @@ export default function App() {
 
     const usedInReceipt = receipts.some((r) => r.partNo === target.partNo);
     const usedInShipment = shipments.some((s) => s.partNo === target.partNo);
+    const usedInPlan = plannedReceipts.some((p) => p.partNo === target.partNo);
 
-    if (usedInReceipt || usedInShipment) {
-      alert("この品番は入出庫データで使用中のため削除できません");
+    if (usedInReceipt || usedInShipment || usedInPlan) {
+      alert("この品番は使用中のため削除できません");
       return;
     }
 
@@ -586,6 +610,134 @@ export default function App() {
     });
   }
 
+  function registerPlannedReceiptToStock() {
+    const planId = plannedReceiptForm.planId;
+    const shelfNo = plannedReceiptForm.shelfNo.trim().toUpperCase();
+    const boxCount = Number(plannedReceiptForm.boxCount);
+    const receiptDate = plannedReceiptForm.receiptDate;
+
+    if (!planId) {
+      alert("予定を選んでください");
+      return;
+    }
+
+    if (!shelfNo || !boxCount || !receiptDate) {
+      alert("棚番・入庫箱数・入庫日を入力してください");
+      return;
+    }
+
+    if (boxCount <= 0) {
+      alert("入庫箱数は1以上を入力してください");
+      return;
+    }
+
+    const plan = plannedReceipts.find((p) => p.id === planId);
+    if (!plan) {
+      alert("対象の入庫予定が見つかりません");
+      return;
+    }
+
+    if (plan.remainingQty <= 0) {
+      alert("この予定はすでに完了しています");
+      return;
+    }
+
+    if (boxCount > plan.remainingQty) {
+      alert("入庫箱数は残箱数以下にしてください");
+      return;
+    }
+
+    const shelfExists = shelfMasters.some((s) => s.shelfNo === shelfNo);
+    if (!shelfExists) {
+      alert("その棚番は棚番マスタにありません");
+      return;
+    }
+
+    if (isShelfInUse(shelfNo)) {
+      alert("その棚番は現在使用中です。空いている棚番を選んでください");
+      return;
+    }
+
+    const newReceipt = {
+      id: Date.now() + Math.random(),
+      shelfNo,
+      partNo: plan.partNo,
+      boxCount,
+      receiptDate,
+      sourcePlanId: plan.id,
+    };
+
+    setReceipts((prev) => [...prev, newReceipt]);
+    setPlannedReceipts((prev) =>
+      prev.map((p) =>
+        p.id === plan.id
+          ? {
+              ...p,
+              remainingQty: p.remainingQty - boxCount,
+            }
+          : p
+      )
+    );
+
+    setPlannedReceiptForm({
+      planId: "",
+      shelfNo: "",
+      boxCount: "",
+      receiptDate: todayStr(),
+    });
+
+    setInfo("入庫予定から入庫登録しました");
+  }
+
+  function startPlannedReceipt(plan) {
+    if (plan.remainingQty <= 0) {
+      alert("この予定は完了しています");
+      return;
+    }
+
+    setPlannedReceiptForm({
+      planId: plan.id,
+      shelfNo: "",
+      boxCount: String(plan.remainingQty),
+      receiptDate: todayStr(),
+    });
+    setActiveTab("plannedReceipt");
+  }
+
+  function deletePlannedReceipt(id) {
+    const target = plannedReceipts.find((p) => p.id === id);
+    if (!target) return;
+
+    const usedInReceipt = receipts.some((r) => r.sourcePlanId === id);
+    if (usedInReceipt) {
+      alert("この予定はすでに入庫実績に使われているため削除できません");
+      return;
+    }
+
+    const ok = window.confirm("この入庫予定を削除しますか？");
+    if (!ok) return;
+
+    setPlannedReceipts((prev) => prev.filter((p) => p.id !== id));
+    if (plannedReceiptForm.planId === id) {
+      setPlannedReceiptForm({
+        planId: "",
+        shelfNo: "",
+        boxCount: "",
+        receiptDate: todayStr(),
+      });
+    }
+    setInfo("入庫予定を削除しました");
+  }
+
+  function cancelPlannedReceiptInput() {
+    setPlannedReceiptForm({
+      planId: "",
+      shelfNo: "",
+      boxCount: "",
+      receiptDate: todayStr(),
+    });
+  }
+
   function editReceipt(receipt) {
     const hasShipment = shipments.some(
       (s) => s.receiptId === receipt.id && !s.canceled
@@ -614,8 +766,21 @@ export default function App() {
       return;
     }
 
+    const target = receipts.find((r) => r.id === id);
+    if (!target) return;
+
     const ok = window.confirm("この入庫データを削除しますか？");
     if (!ok) return;
+
+    if (target.sourcePlanId) {
+      setPlannedReceipts((prev) =>
+        prev.map((p) =>
+          p.id === target.sourcePlanId
+            ? { ...p, remainingQty: p.remainingQty + target.boxCount }
+            : p
+        )
+      );
+    }
 
     setReceipts(receipts.filter((r) => r.id !== id));
 
@@ -724,6 +889,17 @@ export default function App() {
         s.shipmentDate.includes(shipmentKeyword)
     );
   }, [shipments, shipmentKeyword, masters, shelfMasters]);
+
+  const plannedKeyword = plannedSearch.trim().toUpperCase();
+  const filteredPlannedReceipts = useMemo(() => {
+    if (!plannedKeyword) return plannedReceipts;
+    return plannedReceipts.filter(
+      (p) =>
+        p.partNo.includes(plannedKeyword) ||
+        getPartName(p.partNo).toUpperCase().includes(plannedKeyword) ||
+        getPlanStatus(p).includes(plannedKeyword)
+    );
+  }, [plannedReceipts, plannedKeyword, masters]);
 
   const shelfKeyword = shelfSearch.trim().toUpperCase();
   const shelfHistory = useMemo(() => {
@@ -862,6 +1038,7 @@ export default function App() {
     setMasters([]);
     setReceipts([]);
     setShipments([]);
+    setPlannedReceipts([]);
     setShipmentPreview(null);
     setEditingShelfMasterId(null);
     setEditingMasterId(null);
@@ -875,6 +1052,12 @@ export default function App() {
       receiptDate: todayStr(),
     });
     setShipmentForm({ partNo: "" });
+    setPlannedReceiptForm({
+      planId: "",
+      shelfNo: "",
+      boxCount: "",
+      receiptDate: todayStr(),
+    });
     setShelfSearch("");
 
     localStorage.removeItem(STORAGE_KEY);
@@ -884,13 +1067,14 @@ export default function App() {
   function exportBackup() {
     const backupData = {
       appName: "reserve_inventory",
-      version: 5,
+      version: 6,
       exportedAt: new Date().toISOString(),
       data: {
         shelfMasters,
         masters,
         receipts,
         shipments,
+        plannedReceipts,
       },
     };
 
@@ -936,6 +1120,9 @@ export default function App() {
         const nextShipments = Array.isArray(sourceData.shipments)
           ? sourceData.shipments
           : [];
+        const nextPlannedReceipts = Array.isArray(sourceData.plannedReceipts)
+          ? sourceData.plannedReceipts
+          : [];
 
         const ok = window.confirm("現在のデータを上書きして復元します。よろしいですか？");
         if (!ok) return;
@@ -944,6 +1131,7 @@ export default function App() {
         setMasters(nextMasters);
         setReceipts(nextReceipts);
         setShipments(nextShipments);
+        setPlannedReceipts(nextPlannedReceipts);
         setShipmentPreview(null);
         setEditingShelfMasterId(null);
         setEditingMasterId(null);
@@ -957,6 +1145,12 @@ export default function App() {
           receiptDate: todayStr(),
         });
         setShipmentForm({ partNo: "" });
+        setPlannedReceiptForm({
+          planId: "",
+          shelfNo: "",
+          boxCount: "",
+          receiptDate: todayStr(),
+        });
         setInfo("バックアップを復元しました");
       } catch {
         alert("バックアップファイルの読み込みに失敗しました");
@@ -1240,6 +1434,85 @@ export default function App() {
     reader.readAsText(file, "utf-8");
   }
 
+  function openPlannedReceiptCsvDialog() {
+    if (plannedReceiptCsvInputRef.current) {
+      plannedReceiptCsvInputRef.current.value = "";
+      plannedReceiptCsvInputRef.current.click();
+    }
+  }
+
+  function importPlannedReceiptCsv(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const text = String(reader.result ?? "");
+        const rows = parseCsvText(text);
+
+        if (rows.length === 0) {
+          alert("CSVにデータがありません");
+          return;
+        }
+
+        const header = rows[0].map((v) => v.trim());
+        const partNoIndex = header.indexOf("品番");
+        const boxCountIndex = header.indexOf("箱数");
+
+        if (partNoIndex === -1 || boxCountIndex === -1) {
+          alert("見出しは『品番,箱数』が必要です");
+          return;
+        }
+
+        let added = 0;
+        let skipped = 0;
+        const newItems = [];
+
+        for (let i = 1; i < rows.length; i++) {
+          const row = rows[i];
+          const partNo = (row[partNoIndex] || "").trim().toUpperCase();
+          const boxCount = Number((row[boxCountIndex] || "").trim());
+
+          if (!partNo || !boxCount) {
+            skipped++;
+            continue;
+          }
+
+          if (boxCount <= 0) {
+            skipped++;
+            continue;
+          }
+
+          const partExists = masters.some((m) => m.partNo === partNo);
+          if (!partExists) {
+            skipped++;
+            continue;
+          }
+
+          newItems.push({
+            id: Date.now() + Math.random() + i,
+            partNo,
+            planQty: boxCount,
+            remainingQty: boxCount,
+            createdAt: todayStr(),
+          });
+          added++;
+        }
+
+        if (newItems.length > 0) {
+          setPlannedReceipts((prev) => [...prev, ...newItems]);
+        }
+
+        alert(`入庫予定CSV取込完了\n追加: ${added}件\nスキップ: ${skipped}件`);
+      } catch {
+        alert("入庫予定CSVの取込に失敗しました");
+      }
+    };
+
+    reader.readAsText(file, "utf-8");
+  }
+
   function exportStockCsv() {
     const rows = filteredStockList.map((r) => [
       r.shelfNo,
@@ -1330,7 +1603,16 @@ export default function App() {
       </div>
 
       {message && (
-        <div style={{ marginBottom: "14px", padding: "12px 14px", background: "#ecfccb", border: "1px solid #84cc16", borderRadius: "12px", fontSize: "18px" }}>
+        <div
+          style={{
+            marginBottom: "14px",
+            padding: "12px 14px",
+            background: "#ecfccb",
+            border: "1px solid #84cc16",
+            borderRadius: "12px",
+            fontSize: "18px",
+          }}
+        >
           {message}
         </div>
       )}
@@ -1338,6 +1620,7 @@ export default function App() {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "12px", marginBottom: "20px" }}>
         <TabButton id="shelfMaster" label="棚番マスタ" />
         <TabButton id="master" label="品番マスタ" />
+        <TabButton id="plannedReceipt" label="入庫予定" />
         <TabButton id="receipt" label="入庫" />
         <TabButton id="shipment" label="出庫" />
         <TabButton id="stock" label="在庫一覧" />
@@ -1361,11 +1644,33 @@ export default function App() {
           </div>
 
           <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
-            <input style={inputStyle} type="text" placeholder="棚番" value={shelfMasterForm.shelfNo} onChange={(e) => setShelfMasterForm({ ...shelfMasterForm, shelfNo: e.target.value })} />
-            <input style={inputStyle} type="text" placeholder="棚名" value={shelfMasterForm.shelfName} onChange={(e) => setShelfMasterForm({ ...shelfMasterForm, shelfName: e.target.value })} />
-            <input style={inputStyle} type="text" placeholder="備考" value={shelfMasterForm.remark} onChange={(e) => setShelfMasterForm({ ...shelfMasterForm, remark: e.target.value })} />
-            <button style={primaryButtonStyle} onClick={addOrUpdateShelfMaster}>{editingShelfMasterId ? "棚番更新" : "棚番登録"}</button>
-            {editingShelfMasterId && <button style={buttonStyle} onClick={cancelShelfMasterEdit}>編集取消</button>}
+            <input
+              style={inputStyle}
+              type="text"
+              placeholder="棚番"
+              value={shelfMasterForm.shelfNo}
+              onChange={(e) => setShelfMasterForm({ ...shelfMasterForm, shelfNo: e.target.value })}
+            />
+            <input
+              style={inputStyle}
+              type="text"
+              placeholder="棚名"
+              value={shelfMasterForm.shelfName}
+              onChange={(e) => setShelfMasterForm({ ...shelfMasterForm, shelfName: e.target.value })}
+            />
+            <input
+              style={inputStyle}
+              type="text"
+              placeholder="備考"
+              value={shelfMasterForm.remark}
+              onChange={(e) => setShelfMasterForm({ ...shelfMasterForm, remark: e.target.value })}
+            />
+            <button style={primaryButtonStyle} onClick={addOrUpdateShelfMaster}>
+              {editingShelfMasterId ? "棚番更新" : "棚番登録"}
+            </button>
+            {editingShelfMasterId && (
+              <button style={buttonStyle} onClick={cancelShelfMasterEdit}>編集取消</button>
+            )}
           </div>
 
           <div style={{ ...tableWrapStyle, marginTop: "15px" }}>
@@ -1414,10 +1719,26 @@ export default function App() {
           </div>
 
           <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
-            <input style={inputStyle} type="text" placeholder="品番" value={masterForm.partNo} onChange={(e) => setMasterForm({ ...masterForm, partNo: e.target.value })} />
-            <input style={inputStyle} type="text" placeholder="品名" value={masterForm.partName} onChange={(e) => setMasterForm({ ...masterForm, partName: e.target.value })} />
-            <button style={primaryButtonStyle} onClick={addOrUpdateMaster}>{editingMasterId ? "品番更新" : "品番登録"}</button>
-            {editingMasterId && <button style={buttonStyle} onClick={cancelMasterEdit}>編集取消</button>}
+            <input
+              style={inputStyle}
+              type="text"
+              placeholder="品番"
+              value={masterForm.partNo}
+              onChange={(e) => setMasterForm({ ...masterForm, partNo: e.target.value })}
+            />
+            <input
+              style={inputStyle}
+              type="text"
+              placeholder="品名"
+              value={masterForm.partName}
+              onChange={(e) => setMasterForm({ ...masterForm, partName: e.target.value })}
+            />
+            <button style={primaryButtonStyle} onClick={addOrUpdateMaster}>
+              {editingMasterId ? "品番更新" : "品番登録"}
+            </button>
+            {editingMasterId && (
+              <button style={buttonStyle} onClick={cancelMasterEdit}>編集取消</button>
+            )}
           </div>
 
           <div style={{ ...tableWrapStyle, marginTop: "15px" }}>
@@ -1442,6 +1763,146 @@ export default function App() {
                 ))}
                 {masters.length === 0 && (
                   <tr><td style={tdStyle} colSpan="3">品番マスタがありません</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "plannedReceipt" && (
+        <div style={sectionStyle}>
+          <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "center", marginBottom: "15px" }}>
+            <h2 style={{ fontSize: "28px", margin: 0 }}>入庫予定</h2>
+            <button style={buttonStyle} onClick={openPlannedReceiptCsvDialog}>予定CSV取込</button>
+            <input
+              ref={plannedReceiptCsvInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              style={{ display: "none" }}
+              onChange={importPlannedReceiptCsv}
+            />
+          </div>
+
+          <div style={{ marginBottom: "15px" }}>
+            <input
+              style={{ ...inputStyle, width: "100%", maxWidth: "500px" }}
+              type="text"
+              placeholder="品番・品名・状態で検索"
+              value={plannedSearch}
+              onChange={(e) => setPlannedSearch(e.target.value)}
+            />
+          </div>
+
+          <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", marginBottom: "15px" }}>
+            <select
+              style={inputStyle}
+              value={plannedReceiptForm.planId}
+              onChange={(e) => setPlannedReceiptForm({ ...plannedReceiptForm, planId: e.target.value })}
+            >
+              <option value="">予定を選択</option>
+              {plannedReceipts
+                .filter((p) => p.remainingQty > 0)
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.partNo} / 残 {p.remainingQty}箱
+                  </option>
+                ))}
+            </select>
+
+            <input
+              style={inputStyle}
+              type="text"
+              placeholder="棚番（空棚のみ）"
+              value={plannedReceiptForm.shelfNo}
+              onChange={(e) =>
+                setPlannedReceiptForm({
+                  ...plannedReceiptForm,
+                  shelfNo: e.target.value.toUpperCase(),
+                })
+              }
+              list="planned-shelfnos"
+            />
+            <datalist id="planned-shelfnos">
+              {availableShelfMasters.map((s) => (
+                <option key={s.id} value={s.shelfNo}>{s.shelfName}</option>
+              ))}
+            </datalist>
+
+            <input
+              style={inputStyle}
+              type="number"
+              placeholder="入庫箱数"
+              value={plannedReceiptForm.boxCount}
+              onChange={(e) =>
+                setPlannedReceiptForm({
+                  ...plannedReceiptForm,
+                  boxCount: e.target.value,
+                })
+              }
+            />
+
+            <input
+              style={inputStyle}
+              type="date"
+              value={plannedReceiptForm.receiptDate}
+              onChange={(e) =>
+                setPlannedReceiptForm({
+                  ...plannedReceiptForm,
+                  receiptDate: e.target.value,
+                })
+              }
+            />
+
+            <button style={primaryButtonStyle} onClick={registerPlannedReceiptToStock}>
+              予定から入庫登録
+            </button>
+
+            <button style={buttonStyle} onClick={cancelPlannedReceiptInput}>
+              入力取消
+            </button>
+          </div>
+
+          <div style={{ marginTop: "8px", marginBottom: "14px", fontSize: "16px", color: "#475569" }}>
+            入庫予定CSVの見出しは <strong>品番,箱数</strong> です。
+          </div>
+
+          <div style={tableWrapStyle}>
+            <table style={tableStyle}>
+              <thead>
+                <tr>
+                  <th style={thStyle}>品番</th>
+                  <th style={thStyle}>品名</th>
+                  <th style={thStyle}>予定箱数</th>
+                  <th style={thStyle}>残箱数</th>
+                  <th style={thStyle}>作成日</th>
+                  <th style={thStyle}>状態</th>
+                  <th style={thStyle}>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredPlannedReceipts.map((p) => (
+                  <tr key={p.id}>
+                    <td style={tdStyle}>{p.partNo}</td>
+                    <td style={tdStyle}>{getPartName(p.partNo)}</td>
+                    <td style={tdStyle}>{p.planQty}</td>
+                    <td style={tdStyle}>{p.remainingQty}</td>
+                    <td style={tdStyle}>{p.createdAt}</td>
+                    <td style={tdStyle}>{getPlanStatus(p)}</td>
+                    <td style={tdStyle}>
+                      {p.remainingQty > 0 && (
+                        <button style={smallButtonStyle} onClick={() => startPlannedReceipt(p)}>
+                          この予定から入庫
+                        </button>
+                      )}
+                      <button style={smallDangerButtonStyle} onClick={() => deletePlannedReceipt(p.id)}>
+                        削除
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {filteredPlannedReceipts.length === 0 && (
+                  <tr><td style={tdStyle} colSpan="7">入庫予定がありません</td></tr>
                 )}
               </tbody>
             </table>
@@ -1681,6 +2142,7 @@ export default function App() {
                   <th style={thStyle}>品名</th>
                   <th style={thStyle}>箱数</th>
                   <th style={thStyle}>入庫日</th>
+                  <th style={thStyle}>予定由来</th>
                   <th style={thStyle}>操作</th>
                 </tr>
               </thead>
@@ -1693,6 +2155,7 @@ export default function App() {
                     <td style={tdStyle}>{getPartName(r.partNo)}</td>
                     <td style={tdStyle}>{r.boxCount}</td>
                     <td style={tdStyle}>{r.receiptDate}</td>
+                    <td style={tdStyle}>{r.sourcePlanId ? "予定から" : ""}</td>
                     <td style={tdStyle}>
                       <button style={smallButtonStyle} onClick={() => editReceipt(r)}>編集</button>
                       <button style={smallDangerButtonStyle} onClick={() => deleteReceipt(r.id)}>削除</button>
@@ -1700,7 +2163,7 @@ export default function App() {
                   </tr>
                 ))}
                 {filteredReceipts.length === 0 && (
-                  <tr><td style={tdStyle} colSpan="7">該当データがありません</td></tr>
+                  <tr><td style={tdStyle} colSpan="8">該当データがありません</td></tr>
                 )}
               </tbody>
             </table>
